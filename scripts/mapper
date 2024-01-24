@@ -1,0 +1,158 @@
+#!/usr/bin/env python
+
+import rospy
+from geometry_msgs.msg import Point
+from std_msgs.msg import Bool, String
+from sensor_msgs.msg import CompressedImage
+import numpy as np
+import math
+import cv2
+
+##################################################################################
+
+# Simulated UAV pose:
+Tz = 2.0
+Phi = 0.0
+Theta = 0.0
+Psi = 0.0
+
+# Hardware-specific camera optics:
+Optics = np.array([[62.2],[48.8]]) * math.pi / 180
+
+# User-defined resolution:
+GRID_RES = 0.01
+
+#...
+shouldSample = Bool()
+shouldSample.data = True
+
+##################################################################################
+
+def getDestination(V0, VI, I, TZ):
+    num = sum(np.multiply(V0, VI))
+    den = abs(np.linalg.norm(V0) * np.linalg.norm(VI))
+    gamma = math.acos(num / den)
+    beta = math.atan(math.tan(0.5 * Optics[1, 0]) / math.tan(0.5 * Optics[0, 0]))
+    dist = TZ * math.tan(gamma)
+
+    if I == 1:
+        alpha = beta
+    elif I == 2:
+        alpha = math.pi - beta
+    elif I == 3:
+        alpha = -math.pi + beta
+    elif I == 4:
+        alpha = -beta
+    else:
+        rospy.loginfo("Invalid destination index")
+    
+    Di = Point(); Di.x = dist * math.cos(alpha); Di.y = dist * math.sin(alpha)
+    DI = Point()
+    DI.x = Di.x * math.cos(Psi - math.pi / 2) - Di.y * math.sin(Psi - math.pi / 2)
+    DI.y = Di.x * math.sin(Psi - math.pi / 2) + Di.y * math.cos(Psi - math.pi / 2)
+
+    return DI
+
+def processImage(data, dimensions):
+
+    # Create normalized image grid:
+    rows = dimensions[0]; cols = dimensions[1]
+    xGrid = np.linspace(-1, 1, cols); yGrid = np.linspace(-1, 1, rows)
+
+    # Projective transformation source points:
+    SMAX = Point(); SMAX.x = np.max(xGrid); SMAX.y = np.max(yGrid)
+    SMIN = Point(); SMIN.x = np.min(xGrid); SMIN.y = np.min(yGrid)
+    S1 = Point(); S1.x = SMAX.x; S1.y = SMAX.y
+    S2 = Point(); S2.x = SMIN.x; S2.y = SMAX.y
+    S3 = Point(); S3.x = SMIN.x; S3.y = SMIN.y
+    S4 = Point(); S4.x = SMAX.x; S4.y = SMIN.y
+
+    # Reshape normalized coordinates to column format:
+    xGrid, yGrid = np.meshgrid(xGrid, yGrid)
+    xGrid = xGrid.reshape(-1, 1); yGrid = yGrid.reshape(-1, 1)
+
+    # Projective transformation destination points:
+    global Tz, Phi, Theta, Psi, Optics
+    V0 = np.array([[0.0], [0.0], [-1.0]])
+    V1 = np.array([[math.tan(Phi + 0.5 * Optics[0, 0])],[math.tan(Theta + 0.5 * Optics[1, 0])],[-1]])
+    V2 = np.array([[math.tan(Phi - 0.5 * Optics[0, 0])],[math.tan(Theta + 0.5 * Optics[1, 0])],[-1]])
+    V3 = np.array([[math.tan(Phi - 0.5 * Optics[0, 0])],[math.tan(Theta - 0.5 * Optics[1, 0])],[-1]])
+    V4 = np.array([[math.tan(Phi + 0.5 * Optics[0, 0])],[math.tan(Theta - 0.5 * Optics[1, 0])],[-1]])
+
+    D1 = getDestination(V0, V1, 1, Tz)
+    D2 = getDestination(V0, V2, 2, Tz)
+    D3 = getDestination(V0, V3, 3, Tz)
+    D4 = getDestination(V0, V4, 4, Tz)
+
+    # Homogeneous transformation set up:
+    ST = np.array([[S1.x, S1.y], [S2.x, S2.y], [S3.x, S3.y], [S4.x, S4.y]])
+    DT = np.array([[D1.x, D1.y], [D2.x, D2.y], [D3.x, D3.y], [D4.x, D4.y]])
+    A_ = np.empty((8, 8), float)
+    B_ = np.empty((8, 1), float)
+    for i in range(0, 4):
+
+        j = 2 * i
+        k = j + 1
+
+        # First row in pair:
+        A_[j, 0] = ST[i, 0]
+        A_[j, 1] = ST[i, 1]
+        A_[j, 2] = 1.0
+        A_[j, 3] = 0.0
+        A_[j, 4] = 0.0
+        A_[j, 5] = 0.0
+        A_[j, 6] = -ST[i, 0] * DT[i, 0]
+        A_[j, 7] = -ST[i, 1] * DT[i, 0]
+        B_[j, 0] = DT[i, 0]
+
+        # Second row in pair:
+        A_[k, 0] = 0.0
+        A_[k, 1] = 0.0
+        A_[k, 2] = 0.0
+        A_[k, 3] = ST[i, 0]
+        A_[k, 4] = ST[i, 1]
+        A_[k, 5] = 1.0
+        A_[k, 6] = -ST[i, 0] * DT[i, 1]
+        A_[k, 7] = -ST[i, 1] * DT[i, 1]
+        B_[k, 0] = DT[i, 1]
+
+    # Homogeneous transformation parameters:
+    A_ = np.linalg.inv(A_)
+    H11 = float(np.dot(A_[0, :], B_))
+    H12 = float(np.dot(A_[1, :], B_))
+    H13 = float(np.dot(A_[2, :], B_))
+    H21 = float(np.dot(A_[3, :], B_))
+    H22 = float(np.dot(A_[4, :], B_))
+    H23 = float(np.dot(A_[5, :], B_))
+    H31 = float(np.dot(A_[6, :], B_))
+    H32 = float(np.dot(A_[7, :], B_))
+    H33 = 1.0
+
+    # Homogeneous transformation:
+    H_ = np.array([[H11, H12, H13], [H21, H22, H23], [H31, H32, H33]])
+    state = np.vstack(np.transpose(xGrid), np.transpose(yGrid), np.zeros(1, rows * cols))
+    state = np.multiply(H_, state)[0:2, :]
+    state = np.transpose(state)
+
+    # Decrease resolution of pixel states to lab resolution:
+    global GRID_RES
+    state = GRID_RES * np.round(state / GRID_RES)
+
+    # Reshape RGB data to column format:
+    rgb = data.reshape(-1, 3)
+    
+    # Recursive GLOBAL TRACKING update:
+    
+
+def callbackImage(data):
+    if shouldSample.data:
+        
+        array = np.frombuffer(data.data, np.uint8)
+        image = cv2.imdecode(array, cv2.IMREAD_COLOR)
+        dimensions = image.shape
+
+        if image is not None:
+            processImage(image, dimensions)
+
+        shouldSample.data = False
+
