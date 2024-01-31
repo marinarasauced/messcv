@@ -1,0 +1,237 @@
+#!/usr/bin/env python
+
+import rospy
+from mess_msgs.msg import MessToCV
+from sensor_msgs.msg import CompressedImage
+from std_msgs.msg import Bool, String
+import numpy as np
+import time
+import cv2
+
+##################################################################################
+
+# Object name in VICON Tracker:
+UAV_NAME = "UAV01"
+
+# Hardware-specific camera optics:
+Optics = np.array([[62.2], [48.8]]) * np.pi / 180
+imgRes = np.array([[1280], [960]])
+
+# User-defined resolution:
+labRes = 0.02
+
+# State tracking:
+domainX = np.arange(-5.0, 5.0, labRes)
+domainY = np.arange(-3.5, 3.5, labRes)
+globalX, globalY = np.meshgrid(domainX, domainY)
+globalR = np.zeros((globalX.shape[0], globalX.shape[1]))
+globalG = np.zeros((globalX.shape[0], globalX.shape[1]))
+globalB = np.zeros((globalX.shape[0], globalX.shape[1]))
+globalN = np.zeros((globalX.shape[0], globalX.shape[1]))
+labenv = np.stack((globalX, globalY, globalR, globalG, globalB, globalN), axis=2)
+
+#...
+shouldSample = Bool()
+shouldSample.data = False
+
+##################################################################################
+
+class Point:
+    def __init__(self, x, y, z):
+        self.x = float(x)
+        self.y = float(y)
+        self.z = float(z)
+
+
+def pointDot(v1, v2):
+    return v1.x * v2.x + v1.y * v2.y + v1.z * v2.z
+
+
+def pointNorm(v1):
+    return np.sqrt(v1.x ** 2 + v1.y ** 2 + v1.z ** 2)
+
+
+def getCorner(tx, ty, tz, rx, ry, rz, i):
+    # Surface normal:
+    v0 = Point(0.0, 0.0, -1.0)
+    vi = Point(0.0, 0.0, -1.0)
+
+    # Corner point:
+    if i == 1:
+        vi = Point(tz * np.tan(rx + 0.5 * Optics[0, 0]), tz * np.tan(ry + 0.5 * Optics[1, 0]), -tz)
+    elif i == 2:
+        vi = Point(tz * np.tan(rx - 0.5 * Optics[0, 0]), tz * np.tan(ry + 0.5 * Optics[1, 0]), -tz)
+    elif i == 3:
+        vi = Point(tz * np.tan(rx - 0.5 * Optics[0, 0]), tz * np.tan(ry - 0.5 * Optics[1, 0]), -tz)
+    elif i == 4:
+        vi = Point(tz * np.tan(rx + 0.5 * Optics[0, 0]), tz * np.tan(ry - 0.5 * Optics[1, 0]), -tz)
+
+    gamma = np.arccos(pointDot(v0, vi) / (pointNorm(v0) * pointNorm(vi)))
+    beta = np.arctan(np.tan(0.5 * Optics[1, 0]) / np.tan(0.5 * Optics[0, 0]))
+    alpha = np.array([beta, np.pi - beta, beta - np.pi, -beta])
+    distance = tz * np.tan(gamma)
+
+    x = distance * np.cos(alpha[i - 1])
+    y = distance * np.sin(alpha[i - 1])
+
+    x_ = tx + x * np.cos(rz - np.pi / 2) - y * np.sin(rz - np.pi / 2)
+    y_ = ty + x * np.sin(rz - np.pi / 2) + y * np.cos(rz - np.pi / 2)
+
+    return Point(x_, y_, 0.0)
+
+###############################################################################################
+
+def callbackFlags(data):
+    xs = labenv[:, :, 0].reshape(-1, 1)
+    ys = labenv[:, :, 1].reshape(-1, 1)
+    colors = labenv[:, :, 2:5].reshape(-1, 3) / 255
+    np.savetxt("labenv.csv", np.concatenate((xs, ys, colors), axis=1), delimeter=",")
+    print("Data logged")
+
+def callbackState(data):
+    globalCurr.Tx = data.Tx
+    globalCurr.Ty = data.Ty
+    globalCurr.Tz = data.Tz
+    globalCurr.Rx = data.Rx
+    globalCurr.Ry = data.Ry
+    globalCurr.Rz = data.Rz
+
+    shouldSample.data = True
+
+def processImage(data):
+
+    # Import data of current state:
+    Tx = globalCurr.Tx
+    Ty = globalCurr.Ty
+    Tz = globalCurr.Tz
+    Rx = globalCurr.Rx
+    Ry = globalCurr.Ry
+    Rz = globalCurr.Rz
+    
+    # Source points:
+    S1 = getCorner(0.0, 0.0, Tz, 0.0, 0.0, np.pi / 2, 1)
+    S2 = getCorner(0.0, 0.0, Tz, 0.0, 0.0, np.pi / 2, 2)
+    S3 = getCorner(0.0, 0.0, Tz, 0.0, 0.0, np.pi / 2, 3)
+    S4 = getCorner(0.0, 0.0, Tz, 0.0, 0.0, np.pi / 2, 4)
+
+    # Destination points:
+    D1 = getCorner(Tx, Ty, Tz, Rx, Ry, Rz, 1)
+    D2 = getCorner(Tx, Ty, Tz, Rx, Ry, Rz, 2)
+    D3 = getCorner(Tx, Ty, Tz, Rx, Ry, Rz, 3)
+    D4 = getCorner(Tx, Ty, Tz, Rx, Ry, Rz, 4)
+
+    
+    # Memory allocation:
+    S_ = np.array([[S1.x, S1.y], [S2.x, S2.y], [S3.x, S3.y], [S4.x, S4.y]])
+    D_ = np.array([[D1.x, D1.y], [D2.x, D2.y], [D3.x, D3.y], [D4.x, D4.y]])
+    A_ = np.zeros((8, 8), dtype=np.float64)
+    B_ = np.zeros((8, 1), dtype=np.float64)
+
+    # Matrix & vector needed to obtain homogeneous transformation matrix:
+    for i in range(4):
+
+        # Update first of rows:
+        A_[2 * i, 0] = S_[i, 0]
+        A_[2 * i, 1] = S_[i, 1]
+        A_[2 * i, 2] = 1.0
+        A_[2 * i, -2] = -S_[i, 0] * D_[i, 0]
+        A_[2 * i, -1] = -S_[i, 1] * D_[i, 0]
+        B_[2 * i, 0] = D_[i, 0]
+
+        # Update second of rows:
+        A_[2 * i + 1, 3] = S_[i, 0]
+        A_[2 * i + 1, 4] = S_[i, 1]
+        A_[2 * i + 1, 5] = 1.0
+        A_[2 * i + 1, -2] = -S_[i, 0] * D_[i, 1]
+        A_[2 * i + 1, -1] = -S_[i, 1] * D_[i, 1]
+        B_[2 * i + 1, 0] = D_[i, 1]
+
+    # Projection domain and range:
+    X_ = np.linspace(np.min(S_[:, 0]), np.max(S_[:, 0]), imgRes[0, 0])
+    Y_ = np.linspace(np.min(S_[:, 1]), np.max(S_[:, 1]), imgRes[1, 0])
+    XP_, YP_ = np.meshgrid(X_, Y_)
+    XP = XP_.reshape(1, -1)
+    YP = YP_.reshape(1, -1)
+    source = np.vstack((XP, YP, np.ones((1, XP.shape[1]))))
+
+     # Homogeneous transformation matrix:
+    coefficients = np.append(np.dot(np.linalg.inv(A_), B_), np.array([[1.0]]), axis=0)
+    H_ = coefficients.reshape((3, 3))
+
+    # Pixel mapping:
+    destination = np.dot(H_, source)
+    projection = np.vstack((destination[0, :] / destination[2, :], destination[1, :] / destination[2, :]))
+    projection = labRes * np.rint(projection / labRes)
+    indices = np.lexsort(projection[0:2, :])
+    projection = projection[:, indices]
+
+    # Pixel RGB generation:
+    RGB = data.reshape(-1, 3)
+    Red = RGB[:, 2]
+    Green = RGB[:, 1]
+    Blue = RGB[:, 0]
+
+    col1 = 0; col2 = 0
+    upper = projection.shape[1]
+    while col2 < upper - 1:
+
+        # Column indices of current x value in projection:
+        while projection[0, col1] == projection[0, col2] and col2 < upper - 1:
+            col2 += 1
+
+        # Column indices of current x and y values in projection:
+        tracking = projection[:, col1:col2]
+        tracked = col1 + np.where(tracking[1, :] == projection[1, col1])[0]
+
+        # Global index of current x and y value:
+        globalIx = np.where(np.abs(domainX - projection[0, col1]) < labRes ** 2)[0]
+        globalIy = np.where(np.abs(domainY - projection[1, col1]) < labRes ** 2)[0]
+
+        # Initial RBG values:
+        R0 = labenv[globalIy, globalIx, 2]
+        G0 = labenv[globalIy, globalIx, 3]
+        B0 = labenv[globalIy, globalIx, 4]
+        N0 = labenv[globalIy, globalIx, 5]
+
+        # RGB values to be added:
+        N1 = col2 - col1
+        R1 = np.sqrt((Red[col1:col2] ** 2).sum(0) / N1)
+        G1 = np.sqrt((Green[col1:col2] ** 2).sum(0) / N1)
+        B1 = np.sqrt((Blue[col1:col2] ** 2).sum(0) / N1)
+
+        # Update lab environment tracking matrix:
+        labenv[globalIy, globalIx, 2] = np.sqrt((N0 * R0 ** 2 + N1 * R1 ** 2) / (N0 + N1))
+        labenv[globalIy, globalIx, 3] = np.sqrt((N0 * G0 ** 2 + N1 * G1 ** 2) / (N0 + N1))
+        labenv[globalIy, globalIx, 4] = np.sqrt((N0 * B0 ** 2 + N1 * B1 ** 2) / (N0 + N1))
+        labenv[globalIy, globalIx, 5] += N1
+
+        # Update column index for next iteration:
+        col1 = col2
+
+def callbackImage(data):
+    if shouldSample.data:
+        shouldSample.data = False
+        array = np.frombuffer(data.data, np.uint8)
+        image = cv2.imdecode(array, cv2.IMREAD_COLOR)
+        dimensions = image.shape
+
+        if image is not None:
+            processImage(image, dimensions)
+
+##################################################################################
+
+if __name__=="__main__":
+
+    # Initialize node:
+    rospy.init_node("mapmess_static")
+
+    # Create objects:
+    globalCurr = MesstoCV(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+
+    # Initialize publishers and subscribers:
+    rospy.Subscriber("/raspicam_node/image/compressed", CompressedImage, callbackImage)
+    rospy.Subscriber("/messop/" + UAV_NAME + "/state", MessToCV, callbackState)
+    rospy.Subscriber("/messop/flags/cv", Bool, callbackFlags)
+
+    # Do stuff:
+    rospy.spin()
