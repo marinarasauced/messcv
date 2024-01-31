@@ -1,2 +1,2 @@
 # messmapper
-MESS UAV computer vision base code in ROS for MQP-RVC-2401.
+MESS UAV computer vision source code in ROS for MQP-RVC-2401.
