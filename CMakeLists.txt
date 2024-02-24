@@ -22,7 +22,7 @@ include_directories(
 )
 
 catkin_install_python(PROGRAMS
-  scripts/mapper
+  scripts/calibration
   scripts/threat
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
