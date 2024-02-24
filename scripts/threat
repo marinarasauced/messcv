@@ -11,7 +11,7 @@ import cv2
 ##################################################################################
 
 # Object name in VICON Tracker:
-UAV_NAME = "UAV01"
+UAV_NAME = "hawk2"
 
 # Hardware-specific camera optics:
 Optics = np.array([[62.2], [48.8]]) * np.pi / 180
