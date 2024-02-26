@@ -23,7 +23,8 @@ include_directories(
 
 catkin_install_python(PROGRAMS
   scripts/calibration
-  scripts/threat
+  scripts/threatfield
+  scripts/stills
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 
