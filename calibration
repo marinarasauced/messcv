@@ -12,7 +12,7 @@ import json
 UAV_NAME = "hawk2"
 
 # 
-USER = "mjnelson"
+USER = "ubuntu"
 NAME = UAV_NAME + "_calibration.json"
 PATH = "/home/" + USER + "/catkin_ws/src/messcv/" + NAME
 
