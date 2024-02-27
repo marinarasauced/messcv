@@ -1,14 +1,21 @@
 #!/usr/bin/env python
 
 import rospy
-from mess_msgs.msg import MessToCV
+from geometry_msgs.msg import TransformStamped, Quaternion
+from mess_msgs.msg import MessToCV, CalibrateUGV
 from sensor_msgs.msg import CompressedImage
 from std_msgs.msg import Bool, String
 import numpy as np
 import time
 import cv2
+import json
+import os.path
 
 ##################################################################################
+
+# Calibration:
+f = open(os.path.dirname(__file__) + "/../calibration.json")
+f_data = json.load(f)
 
 # Object name in VICON Tracker:
 UAV_NAME = "hawk2"
@@ -20,9 +27,12 @@ imgRes = np.array([[1280], [960]])
 # User-defined resolution:
 labRes = 0.02
 
+camera_distance = 0.08
+camera_height = -0.05
+
 # State tracking:
 domainX = np.arange(-5.0, 5.0, labRes)
-domainY = np.arange(-3.5, 3.5, labRes)
+domainY = np.arange(-6.0, 6.0, labRes)
 globalX, globalY = np.meshgrid(domainX, domainY)
 globalR = np.zeros((globalX.shape[0], globalX.shape[1]))
 globalG = np.zeros((globalX.shape[0], globalX.shape[1]))
@@ -52,6 +62,7 @@ def pointNorm(v1):
 
 
 def getCorner(tx, ty, tz, rx, ry, rz, i):
+    
     # Surface normal:
     v0 = Point(0.0, 0.0, -1.0)
     vi = Point(0.0, 0.0, -1.0)
@@ -82,21 +93,47 @@ def getCorner(tx, ty, tz, rx, ry, rz, i):
 ###############################################################################################
 
 def callbackFlags(data):
+    print("Logging threat ...")
     xs = labenv[:, :, 0].reshape(-1, 1)
     ys = labenv[:, :, 1].reshape(-1, 1)
-    colors = labenv[:, :, 2:5].reshape(-1, 3) / 255
-    np.savetxt("labenv.csv", np.concatenate((xs, ys, colors), axis=1), delimeter=",")
-    print("Data logged")
+    colors = labenv[:, :, 2:5].reshape(-1, 3)
+    ns = labenv[:, :, 5].reshape(-1, 1)
+    np.savetxt("labenv.csv", np.concatenate((xs, ys, colors, ns), axis=1), delimiter=",")
+    print("Threat logged")
 
-def callbackState(data):
-    globalCurr.Tx = data.Tx
-    globalCurr.Ty = data.Ty
-    globalCurr.Tz = data.Tz
-    globalCurr.Rx = data.Rx
-    globalCurr.Ry = data.Ry
-    globalCurr.Rz = data.Rz
-
+def samplecallback(data):
     shouldSample.data = True
+
+#
+def multiplyQuats(q1, q2):
+
+    # Product of Quaternion input:
+    qnew = Quaternion()
+    qnew.x = (q1.w * q2.x) + (q1.x * q2.w) + (q1.y * q2.z) - (q1.z * q2.y)
+    qnew.y = (q1.w * q2.y) - (q1.x * q2.z) + (q1.y * q2.w) + (q1.z * q2.x)
+    qnew.z = (q1.w * q2.z) + (q1.x * q2.y) - (q1.y * q2.x) + (q1.z * q2.w)
+    qnew.w = (q1.w * q2.w) - (q1.x * q2.x) - (q1.y * q2.y) - (q1.z * q2.z)
+
+    return qnew
+
+def viconCallback(data):
+    globalCurr.Tx = data.transform.translation.x
+    globalCurr.Ty = data.transform.translation.y
+    globalCurr.Tz = data.transform.translation.z
+
+    qc = Quaternion()
+    qc.x = data.transform.rotation.x
+    qc.y = data.transform.rotation.y
+    qc.z = data.transform.rotation.z
+    qc.w = data.transform.rotation.w
+
+    qt = multiplyQuats(q_diff, qc)
+
+    globalCurr.Rx = np.arctan2(2 * (qt.w * qt.x + qt.y * qt.z), 1 - 2 * (qt.x ** 2 + qt.y ** 2))
+    globalCurr.Ry = np.arcsin(2 * (qt.w * qt.y - qt.z * qt.x))
+    globalCurr.Rz = np.arctan2(2 * (qt.w * qt.z + qt.x * qt.y), qt.w ** 2 + qt.x ** 2 - qt.y ** 2 - qt.z ** 2)
+
+    rospy.loginfo("%.4f\t%.4f\t%.4f", globalCurr.Rx, globalCurr.Ry, globalCurr.Rz)
 
 def processImage(data):
 
@@ -107,6 +144,10 @@ def processImage(data):
     Rx = globalCurr.Rx
     Ry = globalCurr.Ry
     Rz = globalCurr.Rz
+
+    Tx += camera_height * (np.sin(Rx) * np.sin(Rz) + np.cos(Rx) * np.cos(Rz) * np.sin(Ry)) + camera_distance * np.cos(Ry) * np.cos(Rz)
+    Ty += camera_distance * np.cos(Ry) * np.sin(Rz) - camera_height * (np.cos(Rz) * np.sin(Rx) - np.cos(Rx) * np.sin(Ry) * np.sin(Rz))
+    Tz += camera_height * np.cos(Rx) * np.cos(Ry) - camera_distance * np.sin(Ry)
     
     # Source points:
     S1 = getCorner(0.0, 0.0, Tz, 0.0, 0.0, np.pi / 2, 1)
@@ -119,7 +160,6 @@ def processImage(data):
     D2 = getCorner(Tx, Ty, Tz, Rx, Ry, Rz, 2)
     D3 = getCorner(Tx, Ty, Tz, Rx, Ry, Rz, 3)
     D4 = getCorner(Tx, Ty, Tz, Rx, Ry, Rz, 4)
-
     
     # Memory allocation:
     S_ = np.array([[S1.x, S1.y], [S2.x, S2.y], [S3.x, S3.y], [S4.x, S4.y]])
@@ -170,10 +210,9 @@ def processImage(data):
     RGB2 = np.rot90(RGB1)
     RGB3 = np.flip(RGB2, axis=1).astype("float64")
     RGB = np.flip(RGB3.reshape(-1, 3), axis=0).astype("float64")
-    RGB = data.reshape(-1, 3)
-    Red = RGB[:, 2]
-    Green = RGB[:, 1]
-    Blue = RGB[:, 0]
+    Red = RGB[indices, 2]
+    Green = RGB[indices, 1]
+    Blue = RGB[indices, 0]
 
     col1 = 0; col2 = 0
     upper = projection.shape[1]
@@ -182,10 +221,6 @@ def processImage(data):
         # Column indices of current x value in projection:
         while projection[0, col1] == projection[0, col2] and col2 < upper - 1:
             col2 += 1
-
-        # Column indices of current x and y values in projection:
-        tracking = projection[:, col1:col2]
-        tracked = col1 + np.where(tracking[1, :] == projection[1, col1])[0]
 
         # Global index of current x and y value:
         globalIx = np.where(np.abs(domainX - projection[0, col1]) < labRes ** 2)[0]
@@ -198,10 +233,11 @@ def processImage(data):
         N0 = labenv[globalIy, globalIx, 5]
 
         # RGB values to be added:
-        N1 = col2 - col1
+        N1 = col2 - col1  
         R1 = np.sqrt((Red[col1:col2] ** 2).sum(0) / N1)
         G1 = np.sqrt((Green[col1:col2] ** 2).sum(0) / N1)
         B1 = np.sqrt((Blue[col1:col2] ** 2).sum(0) / N1)
+        print(col1, col2)
 
         # Update lab environment tracking matrix:
         labenv[globalIy, globalIx, 2] = np.sqrt((N0 * R0 ** 2 + N1 * R1 ** 2) / (N0 + N1))
@@ -217,25 +253,37 @@ def callbackImage(data):
         shouldSample.data = False
         array = np.frombuffer(data.data, np.uint8)
         image = cv2.imdecode(array, cv2.IMREAD_COLOR)
-        dimensions = image.shape
 
         if image is not None:
-            processImage(image, dimensions)
+            print("Mapping image ...")
+            processImage(image)
+            print("Image mapped")
 
 ##################################################################################
 
 if __name__=="__main__":
 
     # Initialize node:
-    rospy.init_node("mapmess_static")
+    rospy.init_node("messcv_threat")
 
     # Create objects:
-    globalCurr = MesstoCV(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+    globalCurr = MessToCV(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+    calibration = CalibrateUGV(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
 
     # Initialize publishers and subscribers:
     rospy.Subscriber("/raspicam_node/image/compressed", CompressedImage, callbackImage)
-    rospy.Subscriber("/messop/" + UAV_NAME + "/state", MessToCV, callbackState)
     rospy.Subscriber("/messop/flags/cv", Bool, callbackFlags)
+    rospy.Subscriber("/vicon/" + UAV_NAME + "/" + UAV_NAME, TransformStamped, viconCallback)
+    rospy.Subscriber("/messop/messcv/sample", Bool, samplecallback)
 
     # Do stuff:
+    q_diff = Quaternion()
+    q_diff.x = f_data["x"]
+    q_diff.y = f_data["y"]
+    q_diff.z = f_data["z"]
+    q_diff.w = f_data["w"]
+    globalCurr = MessToCV(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+    calibration = CalibrateUGV(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+    rospy.Subscriber("/vicon/" + UAV_NAME + "/" + UAV_NAME, TransformStamped, viconCallback)
+
     rospy.spin()
