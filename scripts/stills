@@ -15,7 +15,7 @@ UAV_NAME = "hawk2"
 SAMPLE_RATE = 0.5   # hz
 
 # User-define image log path:
-PATH = "/home/mjnelson/catkin_ws/logs/jpg/"
+PATH = "/home/ubuntu/catkin_ws/logs/jpg/"
 
 ##################################################################################
 
@@ -76,7 +76,6 @@ def main():
 
         # Generate image timestamp:
         timestamps = get_timestamp(timestamps, counter)
-        print(timestamps.shape)
 
         # Generate file name:
         name = get_file_name(counter)
@@ -86,7 +85,6 @@ def main():
 
         # Log image:
         get_image(path)
-        print(time.time())
 
         # Incremement counter:
         counter += 1
