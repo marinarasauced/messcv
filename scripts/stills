@@ -12,7 +12,7 @@ import numpy as np
 UAV_NAME = "hawk2"
 
 # User-defined image sample rate:
-SAMPLE_RATE = 0.5   # hz
+SAMPLE_RATE = 1 / 6   # hz
 
 # User-define image log path:
 PATH = "/home/ubuntu/catkin_ws/logs/jpg/"
