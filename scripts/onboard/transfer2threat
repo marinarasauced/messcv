@@ -13,11 +13,11 @@ import os.path
 ##################################################################################
 
 # Import vehicle config:
-f = open(os.path.dirname(__file__) + "/../../config.json")
+f = open(os.path.dirname(__file__) + "/../../json/config.json")
 fData = json.load(f)
 
 # Import calibration parameters:
-c = open(os.path.dirname(__file__) + "/../../calibration.json")
+c = open(os.path.dirname(__file__) + "/../../json/calibration.json")
 cData = json.load(c)
 
 ##################################################################################

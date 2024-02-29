@@ -14,7 +14,7 @@ UAV_NAME = "hawk2"
 # 
 USER = "ubuntu"
 NAME = "calibration.json"
-PATH = "/home/" + USER + "/catkin_ws/src/messcv/" + NAME
+PATH = "/home/" + USER + "/catkin_ws/src/messcv/json" + NAME
 
 ##################################################################################
 
