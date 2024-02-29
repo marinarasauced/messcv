@@ -1,0 +1,170 @@
+#!/usr/bin/env python
+
+import rospy
+from geometry_msgs.msg import TransformStamped, Quaternion
+from mess_msgs.msg import StateUAV, UAV2MESSCV
+from sensor_msgs.msg import CompressedImage
+from std_msgs.msg import Bool
+
+import json
+import numpy as np
+import os.path
+
+##################################################################################
+
+# Import vehicle config:
+f = open(os.path.dirname(__file__) + "/../../config.json")
+fData = json.load(f)
+
+# Import calibration parameters:
+c = open(os.path.dirname(__file__) + "/../../calibration.json")
+cData = json.load(c)
+
+##################################################################################
+
+#
+def quat2Eul(q):
+
+    # Euler angle form of Quaternion input:
+    Rx = np.arctan2(2 * (q.w * q.x + q.y * q.z), 1 - 2 * (q.x ** 2 + q.y ** 2))
+    Ry = -0.5 * np.pi + 2 * np.arctan2(np.sqrt(1 + 2 * (q.w * q.y - q.x * q.z)), np.sqrt(1 - 2 * (q.w * q.y - q.x * q.z)))
+    Rz = np.arctan2(2 * (q.w * q.z + q.x * q.y), 1 - 2 * (q.y ** 2 + q.z ** 2))
+
+    return Rx, Ry, Rz
+
+#
+def quatMultiply(q1, q2):
+
+    # Product of Quaternion input:
+    qProduct = Quaternion()
+    qProduct.x = (q1.w * q2.x) + (q1.x * q2.w) + (q1.y * q2.z) - (q1.z * q2.y)
+    qProduct.y = (q1.w * q2.y) - (q1.x * q2.z) + (q1.y * q2.w) + (q1.z * q2.x)
+    qProduct.z = (q1.w * q2.z) + (q1.x * q2.y) - (q1.y * q2.x) + (q1.z * q2.w)
+    qProduct.w = (q1.w * q2.w) - (q1.x * q2.x) - (q1.y * q2.y) - (q1.z * q2.z)
+
+    return qProduct
+
+#
+def callbackVICON(data):
+
+    # Update tracked translation:
+    globalCurr.Tx = data.transform.translation.x
+    globalCurr.Ty = data.transform.translation.y
+    globalCurr.Tz = data.transform.translation.z
+
+    # Store measured rotation:
+    qMeasured = Quaternion
+    qMeasured.x = data.transform.rotation.x
+    qMeasured.y = data.transform.rotation.y
+    qMeasured.z = data.transform.rotation.z
+    qMeasured.w = data.transform.rotation.w
+
+    # Calculate calibrated rotation:
+    qCalibrated = quatMultiply(qDiff, qMeasured)
+
+    # Update tracked rotation:
+    globalCurr.Qx = qCalibrated.x
+    globalCurr.Qy = qCalibrated.y
+    globalCurr.Qz = qCalibrated.z
+    globalCurr.Qw = qCalibrated.w
+
+    # Update tracked Euler angles:
+    globalQuat = Quaternion()
+    globalQuat.x = globalCurr.Qx
+    globalQuat.y = globalCurr.Qy
+    globalQuat.z = globalCurr.Qz
+    globalQuat.w = globalCurr.Qw
+
+    globalCurr.Rx, globalCurr.Ry, globalCurr.Rz = quat2Eul(globalQuat)
+
+    # Transform translation to camera:
+    globalCurr.Tx += camera_height * (np.sin(globalCurr.Rx) * np.sin(globalCurr.Rz) + np.cos(globalCurr.Rx) * np.cos(globalCurr.Rz) * np.sin(globalCurr.Ry)) + camera_distance * np.cos(globalCurr.Ry) * np.cos(globalCurr.Rz)
+    globalCurr.Ty += camera_distance * np.cos(globalCurr.Ry) * np.sin(globalCurr.Rz) - camera_height * (np.cos(globalCurr.z) * np.sin(globalCurr.Rx) - np.cos(globalCurr.Rx) * np.sin(globalCurr.Ry) * np.sin(globalCurr.Rz))
+    globalCurr.Tz += camera_height * np.cos(globalCurr.Rx) * np.cos(globalCurr.Ry) - camera_distance * np.sin(globalCurr.Ry)
+
+#
+def callbackSample(data):
+
+    # Check if image is currently being sampled:
+    if canSample.data:
+
+        # Update shouldSample:
+        shouldSample.data = data
+
+#
+def callbackCamera(data):
+
+    #
+    if shouldSample.data:
+
+        # Update sample status to false for future callbacks:
+        shouldSample.data = False
+        canSample.data = False
+
+        # Create object to be published to remote messcv node:
+        sample = UAV2MESSCV()
+
+        # Store UAV pose in sample object:
+        sample.transform.translation.x = globalCurr.Tx
+        sample.transform.translation.y = globalCurr.Ty
+        sample.transform.translation.z = globalCurr.Tz
+        sample.transform.rotation.x = globalCurr.Qx
+        sample.transform.rotation.y = globalCurr.Qy
+        sample.transform.rotation.z = globalCurr.Qz
+        sample.transform.rotation.w = globalCurr.Qw
+
+        # Store measured image in sample object:
+        sample.image.header.seq = data.header.seq
+        sample.image.header.stamp = data.header.stamp
+        sample.image.header.frame_id = data.header.frame_id
+        sample.image.format = data.format
+        sample.image.data = data.data
+
+        # Store camera optics in sample object:
+        sample.optics[0] = camera_optics[0]
+        sample.optics[1] = camera_optics[1]
+
+        # Publish stored UAV pose and measured image to remote messcv node:
+        pub.publish(sample)
+
+        # Indicate another image can be sampled:
+        canSample.data = True
+
+##################################################################################
+
+#
+if __name__=="__main__":
+
+    # Initialize node:
+    rospy.init_node("messcv_transfer2threat")
+
+    # Create objects:
+    globalCurr = StateUAV()
+    qDiff = Quaternion()
+    canSample = Bool()
+    canSample.data = True
+    shouldSample = Bool()
+    shouldSample.data = False
+
+    # Retrieve calibration data:
+    qDiff.x = fData["x"]
+    qDiff.y = fData["x"]
+    qDiff.z = fData["x"]
+    qDiff.w = fData["x"]
+
+    # Retrieve config data:
+    nameUAV = fData["uav_name"]     # name of uav object in VICON Tracker
+    mode = fData["camera_mode"]     # either vl (visual light) or ir (infrared)
+    camera_distance = fData["camera_distance"]
+    camera_height = fData["camera_height"]
+    camera_optics = np.array([fData["camera_fov1"], fData["camera_fov2"]]) * np.pi / 180
+
+    # Initialize publishers and subscribers:
+    vicon = "/vicon/" + nameUAV + "/" + nameUAV
+    rospy.Subscriber(vicon, TransformStamped, callbackVICON)
+    rospy.Subscriber("/" + nameUAV + "/messop/messcv/sample", callbackSample)
+    rospy.Subscriber("/" + nameUAV + "/raspicam_node/image/compressed", CompressedImage, callbackCamera)
+    pub = rospy.Publisher("/messop/messcv/samples/" + mode, UAV2MESSCV, queue_size=2)
+
+    # Spin until shut down:
+    rospy.spin()

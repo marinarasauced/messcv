@@ -1,289 +1,317 @@
 #!/usr/bin/env python
 
 import rospy
-from geometry_msgs.msg import TransformStamped, Quaternion
-from mess_msgs.msg import MessToCV, CalibrateUGV
-from sensor_msgs.msg import CompressedImage
-from std_msgs.msg import Bool, String
-import numpy as np
-import time
+from geometry_msgs.msg import Vector3, TransformStamped, Quaternion
+from mess_msgs.msg import UAV2MESSCV
+from std_msgs.msg import Bool
+
 import cv2
 import json
+import numpy as np
 import os.path
 
 ##################################################################################
 
-# Calibration:
-f = open(os.path.dirname(__file__) + "/../calibration.json")
-f_data = json.load(f)
+#
+f = open(os.path.dirname(__file__) + "/../../messcv.json")
+fData = json.load(f)
 
-# Object name in VICON Tracker:
-UAV_NAME = "hawk2"
+#
+class labEnvironment():
+    def __init__(self, xmin, xmax, ymin, ymax, res):
 
-# Hardware-specific camera optics:
-Optics = np.array([[62.2], [48.8]]) * np.pi / 180
-imgRes = np.array([[1280], [960]])
+        #
+        self.domainX = np.arange(xmin, xmax, res)
+        self.domainY = np.arange(ymin, ymax, res)
+        globalX, globalY = np.meshgrid(self.domainX, self.domainY)
+        globalR = np.zeros((globalX.shape[0], globalX.shape[1]))
+        globalG = np.zeros((globalX.shape[0], globalX.shape[1]))
+        globalB = np.zeros((globalX.shape[0], globalX.shape[1]))
+        globalN = np.zeros((globalX.shape[0], globalX.shape[1]))
 
-# User-defined resolution:
-labRes = 0.02
-
-camera_distance = 0.08
-camera_height = -0.05
-
-# State tracking:
-domainX = np.arange(-5.0, 5.0, labRes)
-domainY = np.arange(-6.0, 6.0, labRes)
-globalX, globalY = np.meshgrid(domainX, domainY)
-globalR = np.zeros((globalX.shape[0], globalX.shape[1]))
-globalG = np.zeros((globalX.shape[0], globalX.shape[1]))
-globalB = np.zeros((globalX.shape[0], globalX.shape[1]))
-globalN = np.zeros((globalX.shape[0], globalX.shape[1]))
-labenv = np.stack((globalX, globalY, globalR, globalG, globalB, globalN), axis=2)
-
-#...
-shouldSample = Bool()
-shouldSample.data = False
+        #
+        self.env = np.stack((globalX, globalY, globalR, globalG, globalB, globalN), axis=2)
 
 ##################################################################################
 
-class Point:
-    def __init__(self, x, y, z):
-        self.x = float(x)
-        self.y = float(y)
-        self.z = float(z)
-
-
-def pointDot(v1, v2):
-    return v1.x * v2.x + v1.y * v2.y + v1.z * v2.z
-
-
-def pointNorm(v1):
-    return np.sqrt(v1.x ** 2 + v1.y ** 2 + v1.z ** 2)
-
-
-def getCorner(tx, ty, tz, rx, ry, rz, i):
+def callbackVL(data):
     
-    # Surface normal:
-    v0 = Point(0.0, 0.0, -1.0)
-    vi = Point(0.0, 0.0, -1.0)
+    # Check if image is being processed:
+    if canSampleVL.data:
 
-    # Corner point:
-    if i == 1:
-        vi = Point(tz * np.tan(rx + 0.5 * Optics[0, 0]), tz * np.tan(ry + 0.5 * Optics[1, 0]), -tz)
-    elif i == 2:
-        vi = Point(tz * np.tan(rx - 0.5 * Optics[0, 0]), tz * np.tan(ry + 0.5 * Optics[1, 0]), -tz)
-    elif i == 3:
-        vi = Point(tz * np.tan(rx - 0.5 * Optics[0, 0]), tz * np.tan(ry - 0.5 * Optics[1, 0]), -tz)
-    elif i == 4:
-        vi = Point(tz * np.tan(rx + 0.5 * Optics[0, 0]), tz * np.tan(ry - 0.5 * Optics[1, 0]), -tz)
+        # Prevent images from being sampled until current image is processed:
+        canSampleVL.data = False
 
-    gamma = np.arccos(pointDot(v0, vi) / (pointNorm(v0) * pointNorm(vi)))
-    beta = np.arctan(np.tan(0.5 * Optics[1, 0]) / np.tan(0.5 * Optics[0, 0]))
-    alpha = np.array([beta, np.pi - beta, beta - np.pi, -beta])
-    distance = tz * np.tan(gamma)
+        # Retrieve image:
+        array = np.frombuffer(data.data, np.uint8)
+        image = cv2.imdecode(array, cv2.IMREAD_COLOR)
 
-    x = distance * np.cos(alpha[i - 1])
-    y = distance * np.sin(alpha[i - 1])
+        # Retrieve UAV pose:
+        pose = TransformStamped()
+        pose.transform.translation.x = data.transform.translation.x
+        pose.transform.translation.y = data.transform.translation.y
+        pose.transform.translation.z = data.transform.translation.z
+        pose.transform.rotation.x = data.transform.rotation.x
+        pose.transform.rotation.y = data.transform.rotation.y
+        pose.transform.rotation.z = data.transform.rotation.z
+        pose.transform.rotation.w = data.transform.rotation.w
 
-    x_ = tx + x * np.cos(rz - np.pi / 2) - y * np.sin(rz - np.pi / 2)
-    y_ = ty + x * np.sin(rz - np.pi / 2) + y * np.cos(rz - np.pi / 2)
+        # Retrieve camera optics:
+        optics = data.optics
 
-    return Point(x_, y_, 0.0)
+        # Update VL environment matrix:
+        if image is not None:
+            processImage(environmentVL, image, pose, optics)
 
-###############################################################################################
+        # Allow new images to be sampled and processed:
+        canSampleVL.data = True
 
-def callbackFlags(data):
-    print("Logging threat ...")
-    xs = labenv[:, :, 0].reshape(-1, 1)
-    ys = labenv[:, :, 1].reshape(-1, 1)
-    colors = labenv[:, :, 2:5].reshape(-1, 3)
-    ns = labenv[:, :, 5].reshape(-1, 1)
-    np.savetxt("labenv.csv", np.concatenate((xs, ys, colors, ns), axis=1), delimiter=",")
-    print("Threat logged")
 
-def samplecallback(data):
-    shouldSample.data = True
+def callbackIR(data):
+    
+    # Check if image is being processed:
+    if canSampleIR.data:
+
+        # Prevent images from being sampled until current image is processed:
+        canSampleIR.data = False
+
+        # Retrieve image:
+        array = np.frombuffer(data.data, np.uint8)
+        image = cv2.imdecode(array, cv2.IMREAD_COLOR)
+
+        # Retrieve UAV pose:
+        pose = TransformStamped()
+        pose.transform.translation.x = data.transform.translation.x
+        pose.transform.translation.y = data.transform.translation.y
+        pose.transform.translation.z = data.transform.translation.z
+        pose.transform.rotation.x = data.transform.rotation.x
+        pose.transform.rotation.y = data.transform.rotation.y
+        pose.transform.rotation.z = data.transform.rotation.z
+        pose.transform.rotation.w = data.transform.rotation.w
+
+        # Retrieve camera optics:
+        optics = data.optics
+
+        # Update IR environment matrix:
+        if image is not None:
+            processImage(environmentIR, image, pose, optics)
+        
+        # Allow new images to be sampled and processed:
+        canSampleIR.data = True
+
+##################################################################################
 
 #
-def multiplyQuats(q1, q2):
+def quat2Eul(q):
 
-    # Product of Quaternion input:
-    qnew = Quaternion()
-    qnew.x = (q1.w * q2.x) + (q1.x * q2.w) + (q1.y * q2.z) - (q1.z * q2.y)
-    qnew.y = (q1.w * q2.y) - (q1.x * q2.z) + (q1.y * q2.w) + (q1.z * q2.x)
-    qnew.z = (q1.w * q2.z) + (q1.x * q2.y) - (q1.y * q2.x) + (q1.z * q2.w)
-    qnew.w = (q1.w * q2.w) - (q1.x * q2.x) - (q1.y * q2.y) - (q1.z * q2.z)
+    # Euler angle form of Quaternion input:
+    Rx = np.arctan2(2 * (q.w * q.x + q.y * q.z), 1 - 2 * (q.x ** 2 + q.y ** 2))
+    Ry = -0.5 * np.pi + 2 * np.arctan2(np.sqrt(1 + 2 * (q.w * q.y - q.x * q.z)), np.sqrt(1 - 2 * (q.w * q.y - q.x * q.z)))
+    Rz = np.arctan2(2 * (q.w * q.z + q.x * q.y), 1 - 2 * (q.y ** 2 + q.z ** 2))
 
-    return qnew
+    return Rx, Ry, Rz
 
-def viconCallback(data):
-    globalCurr.Tx = data.transform.translation.x
-    globalCurr.Ty = data.transform.translation.y
-    globalCurr.Tz = data.transform.translation.z
+#
+def vector3Dot(v0, vi):
+    return v0.x * vi.x + v0.y * vi.y + v0.z * vi.z
 
-    qc = Quaternion()
-    qc.x = data.transform.rotation.x
-    qc.y = data.transform.rotation.y
-    qc.z = data.transform.rotation.z
-    qc.w = data.transform.rotation.w
+#
+def vector3Norm(vi):
+    return np.sqrt(vi.x ** 2 + vi.y ** 2 + vi.z ** 2)
 
-    qt = multiplyQuats(q_diff, qc)
+#
+def getCorner(tx, ty, tz, rx, ry, rz, i, optics):
 
-    globalCurr.Rx = np.arctan2(2 * (qt.w * qt.x + qt.y * qt.z), 1 - 2 * (qt.x ** 2 + qt.y ** 2))
-    globalCurr.Ry = np.arcsin(2 * (qt.w * qt.y - qt.z * qt.x))
-    globalCurr.Rz = np.arctan2(2 * (qt.w * qt.z + qt.x * qt.y), qt.w ** 2 + qt.x ** 2 - qt.y ** 2 - qt.z ** 2)
-
-    rospy.loginfo("%.4f\t%.4f\t%.4f", globalCurr.Rx, globalCurr.Ry, globalCurr.Rz)
-
-def processImage(data):
-
-    # Import data of current state:
-    Tx = globalCurr.Tx
-    Ty = globalCurr.Ty
-    Tz = globalCurr.Tz
-    Rx = globalCurr.Rx
-    Ry = globalCurr.Ry
-    Rz = globalCurr.Rz
-
-    Tx += camera_height * (np.sin(Rx) * np.sin(Rz) + np.cos(Rx) * np.cos(Rz) * np.sin(Ry)) + camera_distance * np.cos(Ry) * np.cos(Rz)
-    Ty += camera_distance * np.cos(Ry) * np.sin(Rz) - camera_height * (np.cos(Rz) * np.sin(Rx) - np.cos(Rx) * np.sin(Ry) * np.sin(Rz))
-    Tz += camera_height * np.cos(Rx) * np.cos(Ry) - camera_distance * np.sin(Ry)
+    # Create surface normal vector:
+    v0 = Vector3(0.0, 0.0, -1.0)
     
-    # Source points:
-    S1 = getCorner(0.0, 0.0, Tz, 0.0, 0.0, np.pi / 2, 1)
-    S2 = getCorner(0.0, 0.0, Tz, 0.0, 0.0, np.pi / 2, 2)
-    S3 = getCorner(0.0, 0.0, Tz, 0.0, 0.0, np.pi / 2, 3)
-    S4 = getCorner(0.0, 0.0, Tz, 0.0, 0.0, np.pi / 2, 4)
+    # Calculate vector to ith corner:
+    vi = Vector3(0.0, 0.0, -1.0)
+    if i == 1:
+        vi.x = tz * np.tan(rx + 0.5 * optics[0])
+        vi.y = tz * np.tan(ry + 0.5 * optics[1])
+        vi.z = -tz
+    elif i == 2:
+        vi.x = tz * np.tan(rx - 0.5 * optics[0])
+        vi.y = tz * np.tan(ry + 0.5 * optics[1])
+        vi.z = -tz
+    elif i == 3:
+        vi.x = tz * np.tan(rx - 0.5 * optics[0])
+        vi.y = tz * np.tan(ry - 0.5 * optics[1])
+        vi.z = -tz
+    elif i == 4:
+        vi.x = tz * np.tan(rx + 0.5 * optics[0])
+        vi.y = tz * np.tan(ry - 0.5 * optics[1])
+        vi.z = -tz
 
-    # Destination points:
-    D1 = getCorner(Tx, Ty, Tz, Rx, Ry, Rz, 1)
-    D2 = getCorner(Tx, Ty, Tz, Rx, Ry, Rz, 2)
-    D3 = getCorner(Tx, Ty, Tz, Rx, Ry, Rz, 3)
-    D4 = getCorner(Tx, Ty, Tz, Rx, Ry, Rz, 4)
-    
-    # Memory allocation:
+    # Calculate normalized distance in threat plane:
+    gamma = np.arccos(vector3Dot(v0, vi) / (vector3Norm(v0) * vector3Norm(vi)))
+    distance = tz * np.tan(gamma)
+
+    # Calculate heading of corner:
+    beta = np.arctan(np.tan(0.5 * optics[1]) / np.tan(0.5 * optics[0]))
+    alpha = np.array([beta, np.pi - beta, beta - np.pi, -beta])
+
+    # Calculate corner vertex before camera orientation assumption:
+    dx = distance * np.cos(alpha[i - 1])
+    dy = distance * np.sin(alpha[i - 1])
+
+    # Rotate corner vertex to match assumed orientation of camera w.r.t UAV:
+    dx_ = tx + dx * np.cos(rz - np.pi / 2) - dy * np.sin(rz - np.pi / 2)
+    dy_ = ty + dx * np.sin(rz - np.pi / 2) + dy * np.cos(rz - np.pi / 2)
+
+    return Vector3(dx_, dy_, 0.0)
+
+#
+def processImage(env, image, pose, optics):
+
+    # Store UAV translation:
+    Tx = pose.transform.translation.x
+    Ty = pose.transform.translation.y
+    Tz = pose.transform.translation.z
+
+    # Store UAV rotation:
+    Q = Quaternion()
+    Q.x = pose.transform.rotation.x
+    Q.y = pose.transform.rotation.y
+    Q.z = pose.transform.rotation.z
+    Q.w = pose.transform.rotation.w
+
+    # Convert UAV rotation to Euler angle:
+    Rx, Ry, Rz = quat2Eul(Q)
+
+    # Retrieve source vertices:
+    S1 = getCorner(0.0, 0.0, Tz, 0.0, 0.0, np.pi / 2, 1, optics)
+    S2 = getCorner(0.0, 0.0, Tz, 0.0, 0.0, np.pi / 2, 2, optics)
+    S3 = getCorner(0.0, 0.0, Tz, 0.0, 0.0, np.pi / 2, 3, optics)
+    S4 = getCorner(0.0, 0.0, Tz, 0.0, 0.0, np.pi / 2, 4, optics)
+
+    # Retrieve destination vertices:
+    D1 = getCorner(Tx, Ty, Tz, Rx, Ry, Rz, 1, optics)
+    D2 = getCorner(Tx, Ty, Tz, Rx, Ry, Rz, 2, optics)
+    D3 = getCorner(Tx, Ty, Tz, Rx, Ry, Rz, 3, optics)
+    D4 = getCorner(Tx, Ty, Tz, Rx, Ry, Rz, 4, optics)
+
+    # Initialize preliminary homogeneous transformation parameters:
     S_ = np.array([[S1.x, S1.y], [S2.x, S2.y], [S3.x, S3.y], [S4.x, S4.y]])
     D_ = np.array([[D1.x, D1.y], [D2.x, D2.y], [D3.x, D3.y], [D4.x, D4.y]])
     A_ = np.zeros((8, 8), dtype=np.float64)
-    B_ = np.zeros((8, 1), dtype=np.float64)
+    C_ = np.zeros((8, 1), dtype=np.float64)
 
-    # Matrix & vector needed to obtain homogeneous transformation matrix:
+    # Fill A_ and C_ matrices before finding homogeneous transformation matrix:
     for i in range(4):
 
-        # Update first of rows:
+        # Update first of current rows:
         A_[2 * i, 0] = S_[i, 0]
         A_[2 * i, 1] = S_[i, 1]
         A_[2 * i, 2] = 1.0
         A_[2 * i, -2] = -S_[i, 0] * D_[i, 0]
         A_[2 * i, -1] = -S_[i, 1] * D_[i, 0]
-        B_[2 * i, 0] = D_[i, 0]
+        C_[2 * i, 0] = D_[i, 0]
 
-        # Update second of rows:
+        # Update second of current rows:
         A_[2 * i + 1, 3] = S_[i, 0]
         A_[2 * i + 1, 4] = S_[i, 1]
         A_[2 * i + 1, 5] = 1.0
         A_[2 * i + 1, -2] = -S_[i, 0] * D_[i, 1]
         A_[2 * i + 1, -1] = -S_[i, 1] * D_[i, 1]
-        B_[2 * i + 1, 0] = D_[i, 1]
+        C_[2 * i + 1, 0] = D_[i, 1]
 
-    # Projection domain and range:
-    X_ = np.linspace(np.min(S_[:, 0]), np.max(S_[:, 0]), imgRes[0, 0])
-    Y_ = np.linspace(np.min(S_[:, 1]), np.max(S_[:, 1]), imgRes[1, 0])
-    XP_, YP_ = np.meshgrid(X_, Y_)
-    XP = XP_.reshape(1, -1)
-    YP = YP_.reshape(1, -1)
-    source = np.vstack((XP, YP, np.ones((1, XP.shape[1]))))
-
-     # Homogeneous transformation matrix:
-    coefficients = np.append(np.dot(np.linalg.inv(A_), B_), np.array([[1.0]]), axis=0)
+    # Homogeneous transformation matrix:
+    coefficients = np.append(np.dot(np.linalg.inv(A_), C_), np.array([[1.0]]), axis=0)
     H_ = coefficients.reshape((3, 3))
 
-    # Pixel mapping:
+    # Domain and range of image projection:
+    X_ = np.linspace(np.min(S_[:, 0]), np.max(S_[:, 0]), image.shape[1])
+    Y_ = np.linspace(np.min(S_[:, 1]), np.max(S_[:, 1]), image.shape[0])
+    XP_, YP_ = np.meshgrid(X_, Y_)
+    XP_ = XP_.reshape(1, -1)
+    YP_ = YP_.reshape(1, -1)
+
+    # Transform source matrix to destination matrix:
+    source = np.vstack((XP_, YP_, np.ones((1, XP_.shape[1]))))
     destination = np.dot(H_, source)
-    projection = np.vstack((destination[0, :] / destination[2, :], destination[1, :] / destination[2, :]))
-    projection = labRes * np.rint(projection / labRes)
-    indices = np.lexsort(projection[0:2, :])
-    projection = projection[:, indices]
 
-    # Pixel RGB generation:
-    RGB1 = np.rot90(data)
-    RGB2 = np.rot90(RGB1)
-    RGB3 = np.flip(RGB2, axis=1).astype("float64")
-    RGB = np.flip(RGB3.reshape(-1, 3), axis=0).astype("float64")
-    Red = RGB[indices, 2]
-    Green = RGB[indices, 1]
-    Blue = RGB[indices, 0]
+    # Multiply position in threat plane by homogeneous scale factor:
+    projecting = np.vstack((destination[0, :] / destination[2, :], destination[1, :] / destination[2, :]))
 
-    col1 = 0; col2 = 0
+    # Scale projection to labResolution:
+    projecting = labResolution * np.rint(projecting / labResolution)
+
+    # Sort projection:
+    indices = np.lexsort(projecting[0:2, :])
+    projection = projecting[:, indices]
+
+    # Retrieve image RGB values:
+    rgb_ = np.flip(np.rot90(np.rot90(image)), axis=1).astype("float64")
+    RGB_ = np.flip(rgb_.reshape(-1, 3), axis=0).astype("float64")
+    R_ = RGB_[indices, 2]
+    G_ = RGB_[indices, 1]
+    B_ = RGB_[indices, 0]
+
+    #
+    col1 = 0
+    col2 = 0
     upper = projection.shape[1]
     while col2 < upper - 1:
 
-        # Column indices of current x value in projection:
+        # Retrieve column indices of current x-values in projection:
         while projection[0, col1] == projection[0, col2] and col2 < upper - 1:
             col2 += 1
 
-        # Global index of current x and y value:
-        globalIx = np.where(np.abs(domainX - projection[0, col1]) < labRes ** 2)[0]
-        globalIy = np.where(np.abs(domainY - projection[1, col1]) < labRes ** 2)[0]
+        # Retrieve global index of current x and y vertex:
+        xInd = np.where(np.abs(env.domainX - projection[0, col1]) < labResolution ** 2)[0]
+        yInd = np.where(np.abs(env.domainY - projection[1, col1]) < labResolution ** 2)[0]
 
-        # Initial RBG values:
-        R0 = labenv[globalIy, globalIx, 2]
-        G0 = labenv[globalIy, globalIx, 3]
-        B0 = labenv[globalIy, globalIx, 4]
-        N0 = labenv[globalIy, globalIx, 5]
+        # Retrieve initial RGB values:
+        R0 = env.env[yInd, xInd, 2]
+        G0 = env.env[yInd, xInd, 3]
+        B0 = env.env[yInd, xInd, 4]
+        N0 = env.env[yInd, xInd, 5]
 
-        # RGB values to be added:
-        N1 = col2 - col1  
-        R1 = np.sqrt((Red[col1:col2] ** 2).sum(0) / N1)
-        G1 = np.sqrt((Green[col1:col2] ** 2).sum(0) / N1)
-        B1 = np.sqrt((Blue[col1:col2] ** 2).sum(0) / N1)
-        print(col1, col2)
+        # Calculate group batch of new RGB values:
+        Ni = col2 - col1
+        Ri = np.sqrt((R_[col1:col2] ** 2).sum(0) / Ni)
+        Gi = np.sqrt((G_[col1:col2] ** 2).sum(0) / Ni)
+        Bi = np.sqrt((B_[col1:col2] ** 2).sum(0) / Ni)
 
-        # Update lab environment tracking matrix:
-        labenv[globalIy, globalIx, 2] = np.sqrt((N0 * R0 ** 2 + N1 * R1 ** 2) / (N0 + N1))
-        labenv[globalIy, globalIx, 3] = np.sqrt((N0 * G0 ** 2 + N1 * G1 ** 2) / (N0 + N1))
-        labenv[globalIy, globalIx, 4] = np.sqrt((N0 * B0 ** 2 + N1 * B1 ** 2) / (N0 + N1))
-        labenv[globalIy, globalIx, 5] += N1
+        # Update environment:
+        env.env[yInd, xInd, 2] = np.sqrt((N0 * R0 ** 2 + Ni * Ri ** 2) / (N0 + Ni))
+        env.env[yInd, xInd, 3] = np.sqrt((N0 * G0 ** 2 + Ni * Gi ** 2) / (N0 + Ni))
+        env.env[yInd, xInd, 4] = np.sqrt((N0 * B0 ** 2 + Ni * Bi ** 2) / (N0 + Ni))
+        env.env[yInd, xInd, 5] += Ni
 
-        # Update column index for next iteration:
+        # Update column indices for next iteration:
         col1 = col2
-
-def callbackImage(data):
-    if shouldSample.data:
-        shouldSample.data = False
-        array = np.frombuffer(data.data, np.uint8)
-        image = cv2.imdecode(array, cv2.IMREAD_COLOR)
-
-        if image is not None:
-            print("Mapping image ...")
-            processImage(image)
-            print("Image mapped")
 
 ##################################################################################
 
+#
 if __name__=="__main__":
 
     # Initialize node:
     rospy.init_node("messcv_threat")
 
     # Create objects:
-    globalCurr = MessToCV(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-    calibration = CalibrateUGV(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+    canSampleVL = Bool()
+    canSampleVL.data = True
+    canSampleIR = Bool()
+    canSampleIR.data = True
+
+    # Retrieve messcv data:
+    labResolution = fData["lab_res"]
+    xMin = fData["xmin"]
+    xMax = fData["xmax"]
+    yMin = fData["ymin"]
+    yMax = fData["ymax"]
+
+    # Create visual light and infrared environments:
+    environmentVL = labEnvironment(xMin, xMax, yMin, yMax, labResolution)
+    environmentIR = labEnvironment(xMin, xMax, yMin, yMax, labResolution)
 
     # Initialize publishers and subscribers:
-    rospy.Subscriber("/raspicam_node/image/compressed", CompressedImage, callbackImage)
-    rospy.Subscriber("/messop/flags/cv", Bool, callbackFlags)
-    rospy.Subscriber("/vicon/" + UAV_NAME + "/" + UAV_NAME, TransformStamped, viconCallback)
-    rospy.Subscriber("/messop/messcv/sample", Bool, samplecallback)
+    rospy.Subscriber("/messop/messcv/samples/vl", UAV2MESSCV, callbackVL)
+    rospy.Subscriber("/messop/messcv/samples/ir", UAV2MESSCV, callbackIR)
 
-    # Do stuff:
-    q_diff = Quaternion()
-    q_diff.x = f_data["x"]
-    q_diff.y = f_data["y"]
-    q_diff.z = f_data["z"]
-    q_diff.w = f_data["w"]
-    globalCurr = MessToCV(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-    calibration = CalibrateUGV(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-    rospy.Subscriber("/vicon/" + UAV_NAME + "/" + UAV_NAME, TransformStamped, viconCallback)
-
+    # Spin until node is shut down:
     rospy.spin()

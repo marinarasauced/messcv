@@ -96,7 +96,7 @@ def main():
 if __name__=="__main__":
 
     # Initialize node:
-    rospy.init_node("sample_stills")
+    rospy.init_node("messcv_rpicam_stills")
 
     #
     try:
