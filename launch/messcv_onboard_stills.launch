@@ -1,6 +1,6 @@
 <launch>
 
-    <arg name="vehicle_name" default="vehicle"/>
+    <arg name="vehicle_name" default="hawk0"/>
 
     <arg name="enable_raw" default="false"/>
     <arg name="enable_imv" default="false"/>
@@ -25,7 +25,6 @@
         <param name="exposure_mode" value="antishake"/>
         <param name="shutter_speed" value="0"/>
 
-        <remap from="raspicam_node/image/compressed" to="/$(arg vehicle_name)/raspicam_node/image/compressed"/>
     </node>
 
     <node type="raspicam_stills" pkg="messcv" name="$(arg vehicle_name)_raspicam_stills" output="screen"/>
