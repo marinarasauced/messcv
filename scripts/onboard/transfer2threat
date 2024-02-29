@@ -162,7 +162,7 @@ if __name__=="__main__":
     # Initialize publishers and subscribers:
     vicon = "/vicon/" + nameUAV + "/" + nameUAV
     rospy.Subscriber(vicon, TransformStamped, callbackVICON)
-    rospy.Subscriber("/" + nameUAV + "/messop/messcv/sample", callbackSample)
+    rospy.Subscriber("/" + nameUAV + "/messop/messcv/sample", Bool, callbackSample)
     rospy.Subscriber("/" + nameUAV + "_raspicam_node/image/compressed", CompressedImage, callbackImage)
     pub = rospy.Publisher("/messop/messcv/samples/" + mode, UAV2MESSCV, queue_size=2)
 
