@@ -1,0 +1,5 @@
+<launch>
+
+    <node type="threat" pkg="messcv" name="messcv_threat" output="screen"/>
+
+</launch>
