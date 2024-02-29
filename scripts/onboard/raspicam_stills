@@ -25,7 +25,7 @@ savePath = "/home/ubuntu/catkin_ws/logs/jpg/"
 def getTimestamp(timestamps, counter):
 
     # Append timestamps with image:
-    now = rospy.get_rostime()
+    now = rospy.get_rostime().nsecs * 10 ** 9
     timestamps = np.vstack((timestamps, np.array([[f"{counter:04d}", now.secs]])))
     print(now.secs)
     
