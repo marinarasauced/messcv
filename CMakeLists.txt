@@ -22,8 +22,9 @@ include_directories(
 )
 
 catkin_install_python(PROGRAMS
-  scripts/calibration
-  scripts/threat
+  scripts/onboard/raspicam_stills
+  scripts/remote/calibration
+  scripts/remote/threat
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 
