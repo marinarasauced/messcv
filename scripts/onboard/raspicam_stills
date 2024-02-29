@@ -67,7 +67,7 @@ def callbackImage(data):
         try:
 
             # Convert ROS CompressedImage to CV2:
-            image = bridge.imgmsg_to_cv2(data.data, "bgr8")
+            image = bridge.imgmsg_to_cv2(data.data, desired_encoding="bgr8")
 
         except CvBridgeError:
             print("Error converting CompressedImage to CV2")
