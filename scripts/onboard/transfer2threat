@@ -147,10 +147,10 @@ if __name__=="__main__":
     shouldSample.data = False
 
     # Retrieve calibration data:
-    qDiff.x = fData["x"]
-    qDiff.y = fData["x"]
-    qDiff.z = fData["x"]
-    qDiff.w = fData["x"]
+    qDiff.x = cData["x"]
+    qDiff.y = cData["y"]
+    qDiff.z = cData["z"]
+    qDiff.w = cData["w"]
 
     # Retrieve config data:
     nameUAV = fData["uav_name"]     # name of uav object in VICON Tracker
