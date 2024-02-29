@@ -92,7 +92,7 @@ def callbackSample(data):
         shouldSample.data = data
 
 #
-def callbackCamera(data):
+def callbackImage(data):
 
     #
     if shouldSample.data:
@@ -163,7 +163,7 @@ if __name__=="__main__":
     vicon = "/vicon/" + nameUAV + "/" + nameUAV
     rospy.Subscriber(vicon, TransformStamped, callbackVICON)
     rospy.Subscriber("/" + nameUAV + "/messop/messcv/sample", callbackSample)
-    rospy.Subscriber("/" + nameUAV + "/raspicam_node/image/compressed", CompressedImage, callbackCamera)
+    rospy.Subscriber("/" + nameUAV + "/raspicam_node/image/compressed", CompressedImage, callbackImage)
     pub = rospy.Publisher("/messop/messcv/samples/" + mode, UAV2MESSCV, queue_size=2)
 
     # Spin until shut down:

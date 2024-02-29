@@ -1,11 +1,14 @@
 #!/usr/bin/env python
 
 import rospy
+from sensor_msgs.msg import CompressedImage
+from std_msgs.msg import Bool
 
+import cv2
+from cv_bridge import CvBridge, CvBridgeError
 import json
 import numpy as np
 import os.path
-import subprocess
 
 ##################################################################################
 
@@ -49,19 +52,34 @@ def getFilePath(name):
     return path
 
 #
-def getImage(path):
-
-    # Generate shell command:
-    command = "raspistill -o " + path
-    
-    # Execute shell command:
-    subprocess.call(command, shell=True)
-
-#
 def logTimestamps(timestamps):
 
     #
     np.savetxt(savePath + "timestamps.csv", timestamps, delimiter=",", fmt="%s")
+
+#
+def callbackImage(data):
+
+    # https://gist.github.com/rethink-imcmahon/77a1a4d5506258f3dc1f
+
+    #
+    if shouldSample.data:
+
+        #
+        try:
+
+            # Convert ROS CompressedImage to CV2:
+            image = bridge.imgmsg_to_cv2(data.data, "bgr8")
+
+        except CvBridgeError:
+            print("Error converting CompressedImage to CV2")
+
+        #
+        else:
+
+            # Save CV2 as jpg:
+            global path
+            cv2.imwrite(path. image)
 
 #
 def main():
@@ -82,10 +100,13 @@ def main():
         name = getFileName(counter)
 
         # Generate file path:
+        global path
         path = getFilePath(name)
 
         # Log image:
-        getImage(path)
+        shouldSample.data = True
+        rospy.wait_for_message("/" + nameUAV + "/raspicam_node/image/compressed", CompressedImage)
+        shouldSample.data = False
 
         # Incremement counter:
         counter += 1
@@ -99,9 +120,17 @@ if __name__=="__main__":
     # Initialize node:
     rospy.init_node("messcv_rpicam_stills")
 
+    # Create objects:
+    shouldSample = Bool()
+    shouldSample.data = True
+
     # Retrieve config data:
     nameUAV = fData["uav_name"]
     sample_rate = fData["still_rate"]
+    bridge = CvBridge()
+
+    # Initialize publishers and subscribers:
+    rospy.Subscriber("/" + nameUAV + "/raspicam_node/image/compressed", CompressedImage, callbackImage)
 
     #
     try:
@@ -110,7 +139,7 @@ if __name__=="__main__":
         main()
         rospy.spin()
 
-        #
+        # On shut down, log timestamps of images:
         rospy.on_shutdown(lambda: logTimestamps(timestamps))
 
     #
