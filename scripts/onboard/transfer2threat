@@ -53,7 +53,7 @@ def callbackVICON(data):
     globalCurr.Tz = data.transform.translation.z
 
     # Store measured rotation:
-    qMeasured = Quaternion
+    qMeasured = Quaternion()
     qMeasured.x = data.transform.rotation.x
     qMeasured.y = data.transform.rotation.y
     qMeasured.z = data.transform.rotation.z
@@ -79,7 +79,7 @@ def callbackVICON(data):
 
     # Transform translation to camera:
     globalCurr.Tx += camera_height * (np.sin(globalCurr.Rx) * np.sin(globalCurr.Rz) + np.cos(globalCurr.Rx) * np.cos(globalCurr.Rz) * np.sin(globalCurr.Ry)) + camera_distance * np.cos(globalCurr.Ry) * np.cos(globalCurr.Rz)
-    globalCurr.Ty += camera_distance * np.cos(globalCurr.Ry) * np.sin(globalCurr.Rz) - camera_height * (np.cos(globalCurr.z) * np.sin(globalCurr.Rx) - np.cos(globalCurr.Rx) * np.sin(globalCurr.Ry) * np.sin(globalCurr.Rz))
+    globalCurr.Ty += camera_distance * np.cos(globalCurr.Ry) * np.sin(globalCurr.Rz) - camera_height * (np.cos(globalCurr.Rz) * np.sin(globalCurr.Rx) - np.cos(globalCurr.Rx) * np.sin(globalCurr.Ry) * np.sin(globalCurr.Rz))
     globalCurr.Tz += camera_height * np.cos(globalCurr.Rx) * np.cos(globalCurr.Ry) - camera_distance * np.sin(globalCurr.Ry)
 
 #
@@ -163,7 +163,7 @@ if __name__=="__main__":
     vicon = "/vicon/" + nameUAV + "/" + nameUAV
     rospy.Subscriber(vicon, TransformStamped, callbackVICON)
     rospy.Subscriber("/" + nameUAV + "/messop/messcv/sample", callbackSample)
-    rospy.Subscriber("/" + nameUAV + "/raspicam_node/image/compressed", CompressedImage, callbackImage)
+    rospy.Subscriber("/" + nameUAV + "_raspicam_node/image/compressed", CompressedImage, callbackImage)
     pub = rospy.Publisher("/messop/messcv/samples/" + mode, UAV2MESSCV, queue_size=2)
 
     # Spin until shut down:
