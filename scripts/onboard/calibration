@@ -69,7 +69,7 @@ def calibrateUAV():
     data = {"x": Q_diff.x, "y": Q_diff.y, "z": Q_diff.z, "w": Q_diff.w}
     with open(PATH, "w") as f:
         json.dump(data, f)
-    print(NAME + " written to /home/ubuntu/catkin_ws/src/calibration.")
+    print(NAME + " written to " + PATH)
 
 #
 def eul2quat(Rx, Ry, Rz):
