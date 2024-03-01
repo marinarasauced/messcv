@@ -77,7 +77,7 @@ def callbackImage(data):
 
             # Save CV2 as jpg:
             global path
-            cv2.imwrite(path. image)
+            cv2.imwrite(path, image)
 
 #
 def main():
@@ -103,7 +103,7 @@ def main():
 
         # Log image:
         shouldSample.data = True
-        rospy.wait_for_message("/" + nameUAV + "/raspicam_node/image/compressed", CompressedImage)
+        rospy.wait_for_message("/" + nameUAV + "_raspicam_node/image/compressed", CompressedImage)
         shouldSample.data = False
 
         # Incremement counter:
@@ -128,7 +128,7 @@ if __name__=="__main__":
     bridge = CvBridge()
 
     # Initialize publishers and subscribers:
-    rospy.Subscriber("/" + nameUAV + "/raspicam_node/image/compressed", CompressedImage, callbackImage)
+    rospy.Subscriber("/" + nameUAV + "_raspicam_node/image/compressed", CompressedImage, callbackImage)
 
     #
     try:
